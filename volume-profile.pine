@@ -73,12 +73,14 @@ if barstate.islast
         // ── Drawing ─────────────────────────────────────────────────────────
         // Clear previous drawings
         aBoxes = box.all
-        for i = 0 to array.size(aBoxes) - 1
-            box.delete(array.get(aBoxes, i))
+        if array.size(aBoxes) > 0
+            for i = 0 to array.size(aBoxes) - 1
+                box.delete(array.get(aBoxes, i))
 
         aLines = line.all
-        for i = 0 to array.size(aLines) - 1
-            line.delete(array.get(aLines, i))
+        if array.size(aLines) > 0
+            for i = 0 to array.size(aLines) - 1
+                line.delete(array.get(aLines, i))
 
         // Profile anchors: draw leftward from current bar
         rightBar = bar_index
