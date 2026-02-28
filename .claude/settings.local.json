@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(node:*)",
+      "Bash(git:*)",
+      "Bash(where claude:*)",
+      "Bash(echo:*)",
+      "Bash(~/.bashrc:*)"
+    ]
+  }
+}
