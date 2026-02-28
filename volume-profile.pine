@@ -2,13 +2,19 @@
 // © tradingview-volume-profile
 
 //@version=6
-indicator("Regard Hodler's Profile", overlay=true, max_boxes_count=500, max_lines_count=50)
+indicator("Regard Hodler's Profile", overlay=true, max_boxes_count=500, max_lines_count=50, max_labels_count=500)
 
 // ── Inputs ──────────────────────────────────────────────────────────────────
 lookback        = input.int(200, "Lookback Period", minval=10, maxval=5000)
 numRows         = input.int(24, "Number of Rows", minval=4, maxval=100)
 profileWidth    = input.int(50, "Profile Width (bars)", minval=10, maxval=200)
 valueAreaPercent = input.float(70.0, "Value Area %", minval=50.0, maxval=90.0)
+
+showDelta       = input.bool(true, "Show Buy/Sell Delta")
+showLabels      = input.bool(true, "Show Level Labels")
+showHVNLVN      = input.bool(true, "Show HVN/LVN")
+hvnThreshold    = input.float(75.0, "HVN Threshold %", minval=50, maxval=95)
+lvnThreshold    = input.float(25.0, "LVN Threshold %", minval=5, maxval=50)
 
 buyColor        = input.color(color.new(color.green, 40), "Support Color")
 sellColor       = input.color(color.new(color.red, 40), "Resistance Color")
@@ -26,15 +32,23 @@ if barstate.islast
     rowHeight   = (highestHigh - lowestLow) / numRows
 
     if rowHeight > 0
-        // Initialize volume array
-        binVol = array.new_float(numRows, 0.0)
+        // Initialize buy/sell volume arrays
+        binBuyVol  = array.new_float(numRows, 0.0)
+        binSellVol = array.new_float(numRows, 0.0)
+        binVol     = array.new_float(numRows, 0.0)
 
-        // Accumulate volume into bins
+        // Accumulate volume into bins with buy/sell split
         for i = 0 to lookback - 1
             midPrice = (high[i] + low[i]) / 2.0
             bin = math.floor((midPrice - lowestLow) / rowHeight)
             bin := math.min(bin, numRows - 1)
             bin := math.max(bin, 0)
+            buyRatio = high[i] != low[i] ? (close[i] - low[i]) / (high[i] - low[i]) : 0.5
+            buyRatio := math.max(0.0, math.min(1.0, buyRatio))
+            buyV  = volume[i] * buyRatio
+            sellV = volume[i] - buyV
+            array.set(binBuyVol, bin, array.get(binBuyVol, bin) + buyV)
+            array.set(binSellVol, bin, array.get(binSellVol, bin) + sellV)
             array.set(binVol, bin, array.get(binVol, bin) + volume[i])
 
         // Find max total volume (for scaling) and POC bin
@@ -83,11 +97,16 @@ if barstate.islast
             for i = 0 to array.size(aLines) - 1
                 line.delete(array.get(aLines, i))
 
+        aLabels = label.all
+        if array.size(aLabels) > 0
+            for i = 0 to array.size(aLabels) - 1
+                label.delete(array.get(aLabels, i))
+
         // Profile anchors: fixed to right edge of visible chart (price axis)
         rightBar = bar_index + 9999
         leftBar  = rightBar - profileWidth
 
-        // Draw volume boxes per bin — green (support) below close, red (resistance) above
+        // Draw volume boxes per bin
         for i = 0 to numRows - 1
             binBottom = lowestLow + i * rowHeight
             binTop    = binBottom + rowHeight
@@ -95,9 +114,23 @@ if barstate.islast
 
             if binTotal > 0 and maxVol > 0
                 totalWidth = math.round(profileWidth * (binTotal / maxVol))
-                binMid     = binBottom + rowHeight / 2
-                binColor   = binMid < close ? buyColor : sellColor
-                box.new(rightBar - totalWidth, binTop, rightBar, binBottom, border_color=binColor, bgcolor=binColor)
+
+                if showDelta
+                    // Stacked buy/sell boxes
+                    buyV  = array.get(binBuyVol, i)
+                    sellV = array.get(binSellVol, i)
+                    sellWidth = math.round(totalWidth * (sellV / binTotal))
+                    // Buy box (left portion)
+                    if totalWidth - sellWidth > 0
+                        box.new(rightBar - totalWidth, binTop, rightBar - sellWidth, binBottom, border_color=buyColor, bgcolor=buyColor)
+                    // Sell box (right portion, flush to price axis)
+                    if sellWidth > 0
+                        box.new(rightBar - sellWidth, binTop, rightBar, binBottom, border_color=sellColor, bgcolor=sellColor)
+                else
+                    // Single box colored by support/resistance
+                    binMid   = binBottom + rowHeight / 2
+                    binColor = binMid < close ? buyColor : sellColor
+                    box.new(rightBar - totalWidth, binTop, rightBar, binBottom, border_color=binColor, bgcolor=binColor)
 
         // Draw Value Area shading
         vaPriceBottom = lowestLow + vaLow * rowHeight
@@ -107,3 +140,32 @@ if barstate.islast
         // Draw POC line
         pocPrice = lowestLow + (pocBin + 0.5) * rowHeight
         line.new(leftBar, pocPrice, rightBar, pocPrice, color=pocColor, width=2, style=line.style_dashed)
+
+        // Draw VAH and VAL lines
+        line.new(leftBar, vaPriceTop, rightBar, vaPriceTop, color=color.new(color.blue, 30), width=1, style=line.style_dashed)
+        line.new(leftBar, vaPriceBottom, rightBar, vaPriceBottom, color=color.new(color.blue, 30), width=1, style=line.style_dashed)
+
+        // Draw labels for POC, VAH, VAL
+        if showLabels
+            label.new(rightBar, pocPrice, "POC", style=label.style_label_left, color=pocColor, textcolor=color.black, size=size.small)
+            label.new(rightBar, vaPriceTop, "VAH", style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
+            label.new(rightBar, vaPriceBottom, "VAL", style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
+
+        // Detect and label HVN/LVN
+        if showHVNLVN
+            hvnLevel = maxVol * (hvnThreshold / 100.0)
+            lvnLevel = maxVol * (lvnThreshold / 100.0)
+            hvnCount = 0
+            lvnCount = 0
+
+            for i = 0 to numRows - 1
+                binTotal = array.get(binVol, i)
+                binMid   = lowestLow + (i + 0.5) * rowHeight
+
+                if binTotal >= hvnLevel and i != pocBin and hvnCount < 5
+                    label.new(rightBar, binMid, "HVN", style=label.style_label_left, color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
+                    hvnCount += 1
+
+                if binTotal <= lvnLevel and binTotal > 0 and lvnCount < 5
+                    label.new(rightBar, binMid, "LVN", style=label.style_label_left, color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
+                    lvnCount += 1
