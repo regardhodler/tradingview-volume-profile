@@ -148,8 +148,8 @@ if barstate.islast
         // Draw labels for POC, VAH, VAL
         if showLabels
             label.new(rightBar, pocPrice, "POC", style=label.style_label_left, color=pocColor, textcolor=color.black, size=size.small)
-            label.new(rightBar, vaPriceTop, "VAH", style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
-            label.new(rightBar, vaPriceBottom, "VAL", style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
+            label.new(rightBar, vaPriceTop, "Resistance", style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
+            label.new(rightBar, vaPriceBottom, "Support", style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
 
         // Detect and label HVN/LVN
         if showHVNLVN
@@ -163,9 +163,9 @@ if barstate.islast
                 binMid   = lowestLow + (i + 0.5) * rowHeight
 
                 if binTotal >= hvnLevel and i != pocBin and hvnCount < 5
-                    label.new(rightBar, binMid, "HVN", style=label.style_label_left, color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
+                    label.new(rightBar, binMid, "HV", style=label.style_label_left, color=color.new(color.green, 20), textcolor=color.white, size=size.tiny)
                     hvnCount += 1
 
                 if binTotal <= lvnLevel and binTotal > 0 and lvnCount < 5
-                    label.new(rightBar, binMid, "LVN", style=label.style_label_left, color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
+                    label.new(rightBar, binMid, "LV", style=label.style_label_left, color=color.new(color.red, 20), textcolor=color.white, size=size.tiny)
                     lvnCount += 1
