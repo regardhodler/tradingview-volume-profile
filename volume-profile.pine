@@ -96,7 +96,7 @@ if barstate.islast
                 totalWidth = math.round(profileWidth * (binTotal / maxVol))
                 binMid     = binBottom + rowHeight / 2
                 binColor   = binMid < close ? buyColor : sellColor
-                box.new(leftBar, binTop, leftBar + totalWidth, binBottom, border_color=binColor, bgcolor=binColor)
+                box.new(rightBar - totalWidth, binTop, rightBar, binBottom, border_color=binColor, bgcolor=binColor)
 
         // Draw Value Area shading
         vaPriceBottom = lowestLow + vaLow * rowHeight
