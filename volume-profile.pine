@@ -82,9 +82,9 @@ if barstate.islast
             for i = 0 to array.size(aLines) - 1
                 line.delete(array.get(aLines, i))
 
-        // Profile anchors: draw leftward from current bar
-        rightBar = bar_index
-        leftBar  = bar_index - profileWidth
+        // Profile anchors: draw to the right of current bar
+        rightBar = bar_index + profileWidth
+        leftBar  = bar_index
 
         // Draw volume boxes per bin — green (support) below close, red (resistance) above
         for i = 0 to numRows - 1
