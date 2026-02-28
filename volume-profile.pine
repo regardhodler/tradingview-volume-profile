@@ -102,9 +102,9 @@ if barstate.islast
             for i = 0 to array.size(aLabels) - 1
                 label.delete(array.get(aLabels, i))
 
-        // Profile anchors: fixed to right edge of visible chart (price axis)
-        rightBar = bar_index + 500
-        leftBar  = rightBar - profileWidth
+        // Profile anchors: just right of last bar so it's visible on screen
+        rightBar = bar_index + profileWidth + 5
+        leftBar  = bar_index + 5
 
         // Draw volume boxes per bin
         for i = 0 to numRows - 1
