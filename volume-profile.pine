@@ -16,8 +16,9 @@ pocColor        = input.color(color.yellow, "POC Line Color")
 valueAreaBgColor = input.color(color.new(color.blue, 85), "Value Area Color")
 
 // ── Series — must run on every bar for correct state ─────────────────────────
-highestHigh = ta.highest(high, lookback)
-lowestLow   = ta.lowest(low, lookback)
+highestHigh  = ta.highest(high, lookback)
+lowestLow    = ta.lowest(low, lookback)
+// (bar_index used for x-coordinates — no barDuration needed)
 
 // ── Main logic — only on the last bar ───────────────────────────────────────
 if barstate.islast
@@ -82,9 +83,9 @@ if barstate.islast
             for i = 0 to array.size(aLines) - 1
                 line.delete(array.get(aLines, i))
 
-        // Profile anchors: draw to the right of current bar
-        rightBar = bar_index + profileWidth
-        leftBar  = bar_index
+        // Profile anchors: fixed to right edge of visible chart (price axis)
+        rightBar = bar_index + 9999
+        leftBar  = rightBar - profileWidth
 
         // Draw volume boxes per bin — green (support) below close, red (resistance) above
         for i = 0 to numRows - 1
