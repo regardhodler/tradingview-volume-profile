@@ -1,0 +1,570 @@
+// This Pine Script™ code is subject to the terms of the Mozilla Public License 2.0 at https://mozilla.org/MPL/2.0/
+// © The Judas Indicator — HFT Grade Rewrite
+
+//@version=5
+strategy("The Judas Indicator",
+     shorttitle          = "JUDAS",
+     overlay             = true,
+     max_boxes_count     = 500,
+     max_lines_count     = 50,
+     max_labels_count    = 50,
+     default_qty_type    = strategy.fixed,
+     default_qty_value   = 0,
+     initial_capital     = 100000,
+     commission_type     = strategy.commission.percent,
+     commission_value    = 0.04,
+     slippage            = 1,
+     pyramiding          = 0,
+     calc_on_every_tick  = false)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// INPUTS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// ── Strategy ────────────────────────────────────────────────────────────────
+atrPeriod       = input.int(14, "ATR Period", group="Strategy")
+entryThreshold  = input.float(0.45, "Entry Threshold", minval=0.1, maxval=0.9, step=0.05, group="Strategy")
+
+// ── Volume Profile ──────────────────────────────────────────────────────────
+vpLookback  = input.int(100, "VP Lookback", minval=20, maxval=500, group="Volume Profile")
+vpNumRows   = input.int(24, "VP Number of Rows", minval=8, maxval=50, group="Volume Profile")
+vpHvnPct    = input.float(75.0, "HVN Threshold %", minval=50, maxval=95, group="Volume Profile")
+vpVaPct     = input.float(70.0, "Value Area %", minval=50, maxval=90, group="Volume Profile")
+
+// ── CVD ─────────────────────────────────────────────────────────────────────
+cvdBarWeight    = input.float(0.40, "Bar Delta Weight", group="CVD")
+cvdVwapWeight   = input.float(0.35, "VWAP Delta Weight", group="CVD")
+cvdTickWeight   = input.float(0.25, "Tick Approx Weight", group="CVD")
+cvdSmoothLen    = input.int(14, "Smoothing Length", group="CVD")
+cvdDivLookback  = input.int(20, "Divergence Lookback", group="CVD")
+
+// ── Pivots ──────────────────────────────────────────────────────────────────
+pvtLeftBars  = input.int(3, "Left Bars", minval=1, maxval=10, group="Pivots")
+pvtRightBars = input.int(2, "Right Bars", minval=1, maxval=10, group="Pivots")
+pvtProxAtr   = input.float(0.5, "Proximity (ATR mult)", minval=0.1, maxval=2.0, group="Pivots")
+
+// ── Absorption ──────────────────────────────────────────────────────────────
+absLookback  = input.int(20, "Lookback", minval=5, maxval=100, group="Absorption")
+absThreshold = input.float(2.0, "Ratio Threshold", minval=1.0, maxval=5.0, step=0.1, group="Absorption")
+
+// ── Order Imbalance ─────────────────────────────────────────────────────────
+oirSmoothing = input.int(10, "EMA Length", minval=3, maxval=50, group="Order Imbalance")
+oirThreshold = input.float(0.6, "Extreme Threshold", minval=0.2, maxval=0.9, step=0.05, group="Order Imbalance")
+
+// ── Multi-Timeframe ─────────────────────────────────────────────────────────
+htfTimeframe = input.timeframe("60", "HTF Timeframe", group="Multi-Timeframe")
+htfEmaFastN  = input.int(20, "HTF Fast EMA", group="Multi-Timeframe")
+htfEmaSlowN  = input.int(50, "HTF Slow EMA", group="Multi-Timeframe")
+
+// ── Signal Weights ──────────────────────────────────────────────────────────
+wHvn        = input.float(0.20, "Volume Profile", minval=0, maxval=1, step=0.05, group="Signal Weights")
+wCvd        = input.float(0.25, "CVD", minval=0, maxval=1, step=0.05, group="Signal Weights")
+wPivot      = input.float(0.15, "Pivots", minval=0, maxval=1, step=0.05, group="Signal Weights")
+wAbsorption = input.float(0.15, "Absorption", minval=0, maxval=1, step=0.05, group="Signal Weights")
+wOir        = input.float(0.10, "Order Imbalance", minval=0, maxval=1, step=0.05, group="Signal Weights")
+wMtf        = input.float(0.15, "Multi-Timeframe", minval=0, maxval=1, step=0.05, group="Signal Weights")
+
+// ── Risk Management ─────────────────────────────────────────────────────────
+riskPct         = input.float(1.0, "Risk Per Trade %", minval=0.1, maxval=10.0, step=0.1, group="Risk")
+slMult          = input.float(1.5, "Stop Loss (ATR mult)", minval=0.5, maxval=5.0, step=0.1, group="Risk")
+tpMult          = input.float(3.0, "Take Profit (ATR mult)", minval=1.0, maxval=10.0, step=0.1, group="Risk")
+useTrailStop    = input.bool(true, "Use Trailing Stop", group="Risk")
+trailMult       = input.float(2.0, "Trail Points (ATR mult)", minval=0.5, maxval=5.0, step=0.1, group="Risk")
+trailOffsetMult = input.float(0.5, "Trail Offset (ATR mult)", minval=0.1, maxval=2.0, step=0.1, group="Risk")
+
+// ── Visualization ───────────────────────────────────────────────────────────
+showProfile   = input.bool(true, "Show Volume Profile", group="Visualization")
+showDashboard = input.bool(true, "Show Dashboard", group="Visualization")
+profileWidth  = input.int(50, "Profile Width (bars)", minval=10, maxval=200, group="Visualization")
+buyColor      = input.color(color.new(color.green, 40), "Buy Color", group="Visualization")
+sellColor     = input.color(color.new(color.red, 40), "Sell Color", group="Visualization")
+pocColor      = input.color(color.yellow, "POC Color", group="Visualization")
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// GLOBAL SERIES (must run every bar)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+atrVal    = ta.atr(atrPeriod)
+dailyVwap = ta.vwap
+
+// MTF data — request.security must be at global scope
+htfEma20 = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, htfEmaFastN))
+htfEma50 = request.security(syminfo.tickerid, htfTimeframe, ta.ema(close, htfEmaSlowN))
+htfRsi   = request.security(syminfo.tickerid, htfTimeframe, ta.rsi(close, 14))
+htfVwap  = request.security(syminfo.tickerid, htfTimeframe, ta.vwap)
+
+// Shared derived series
+barRange = high - low
+
+// Dashboard color helper (global scope function)
+scoreColor(float s) =>
+    s > 0.3 ? color.green : s < -0.3 ? color.red : color.gray
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODULE 1: ROLLING VOLUME PROFILE
+// Bins price range into ATR-scaled buckets. Tracks per-bin buy/sell volume.
+// Extracts POC, VAH, VAL, HVN. Score: buy/sell delta at price's bin.
+// Fixes: rolling grid (bug 3), per-bin delta (bug 4), no unlimited boxes (bug 2)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+vpHighest  = ta.highest(high, vpLookback)
+vpLowest   = ta.lowest(low, vpLookback)
+vpRowHeight = (vpHighest - vpLowest) / vpNumRows
+
+// Fresh arrays each bar — accumulate volume into bins
+binBuyVol   = array.new_float(vpNumRows, 0.0)
+binSellVol  = array.new_float(vpNumRows, 0.0)
+binTotalVol = array.new_float(vpNumRows, 0.0)
+
+if vpRowHeight > 0
+    for i = 0 to vpLookback - 1
+        midP   = (high[i] + low[i]) / 2.0
+        bin    = math.floor((midP - vpLowest) / vpRowHeight)
+        bin   := math.min(bin, vpNumRows - 1)
+        bin   := math.max(bin, 0)
+        bRatio = high[i] != low[i] ? (close[i] - low[i]) / (high[i] - low[i]) : 0.5
+        bRatio := math.max(0.0, math.min(1.0, bRatio))
+        bV     = volume[i] * bRatio
+        sV     = volume[i] - bV
+        array.set(binBuyVol,   bin, array.get(binBuyVol,   bin) + bV)
+        array.set(binSellVol,  bin, array.get(binSellVol,  bin) + sV)
+        array.set(binTotalVol, bin, array.get(binTotalVol, bin) + volume[i])
+
+// POC — bin with max total volume
+vpMaxVol   = 0.0
+vpPocBin   = 0
+vpTotalVol = 0.0
+for i = 0 to vpNumRows - 1
+    bv = array.get(binTotalVol, i)
+    vpTotalVol += bv
+    if bv > vpMaxVol
+        vpMaxVol := bv
+        vpPocBin := i
+
+pocPrice = vpLowest + (vpPocBin + 0.5) * vpRowHeight
+
+// Value Area — expand outward from POC until vpVaPct of total volume
+vaVol       = array.get(binTotalVol, vpPocBin)
+vaThreshold = vpTotalVol * (vpVaPct / 100.0)
+vaLoBin     = vpPocBin
+vaHiBin     = vpPocBin
+while vaVol < vaThreshold and (vaLoBin > 0 or vaHiBin < vpNumRows - 1)
+    upV = vaHiBin < vpNumRows - 1 ? array.get(binTotalVol, vaHiBin + 1) : 0.0
+    dnV = vaLoBin > 0             ? array.get(binTotalVol, vaLoBin - 1) : 0.0
+    if upV >= dnV and vaHiBin < vpNumRows - 1
+        vaHiBin += 1
+        vaVol   += upV
+    else if vaLoBin > 0
+        vaLoBin -= 1
+        vaVol   += dnV
+    else if vaHiBin < vpNumRows - 1
+        vaHiBin += 1
+        vaVol   += upV
+    else
+        break
+
+vahPrice = vpLowest + (vaHiBin + 1) * vpRowHeight
+valPrice = vpLowest + vaLoBin * vpRowHeight
+
+// HVN Score — buy/sell delta at the bin containing current close
+closeBin = vpRowHeight > 0 ? math.floor((close - vpLowest) / vpRowHeight) : 0
+closeBin := math.min(closeBin, vpNumRows - 1)
+closeBin := math.max(closeBin, 0)
+
+binBV        = array.get(binBuyVol,   closeBin)
+binSV        = array.get(binSellVol,  closeBin)
+binTV        = array.get(binTotalVol, closeBin)
+hvnThreshVol = vpMaxVol * (vpHvnPct / 100.0)
+binDelta     = binTV > 0 ? (binBV - binSV) / binTV : 0.0
+
+// Full weight at HVN, half weight at normal bins
+hvnScore = binTV >= hvnThreshVol ? binDelta : binDelta * 0.5
+
+// Value area position bonus: support holding below VAL or resistance holding above VAH
+if close < valPrice and binDelta > 0
+    hvnScore := math.min(1.0, hvnScore + 0.3)
+if close > vahPrice and binDelta < 0
+    hvnScore := math.max(-1.0, hvnScore - 0.3)
+hvnScore := math.max(-1.0, math.min(1.0, hvnScore))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODULE 2: ENHANCED CVD
+// Three-component composite: bar delta (40%), VWAP delta (35%), tick approx (25%).
+// Detects CVD divergences vs price for reversal signals.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+// Component A: Bar-level delta — (close-low)/(high-low) centered to [-1,+1], scaled by volume
+barDelta    = barRange > 0 ? (close - low) / barRange : 0.5
+barDeltaCvd = (barDelta - 0.5) * 2.0 * volume
+
+// Component B: VWAP-anchored delta — directional pressure vs VWAP
+vwapDelta = dailyVwap > 0 ? (close - dailyVwap) / dailyVwap * volume : 0.0
+
+// Component C: Tick approximation — (close-open)/(high-low) as proxy for net tick direction
+tickApprox = barRange > 0 ? (close - open) / barRange : 0.0
+tickDelta  = tickApprox * volume
+
+// Composite per-bar CVD contribution
+rawCvdBar = cvdBarWeight * barDeltaCvd + cvdVwapWeight * vwapDelta + cvdTickWeight * tickDelta
+
+// Cumulative CVD
+var float cvdCumulative = 0.0
+cvdCumulative += rawCvdBar
+
+// Smoothed for trend detection
+cvdSmooth = ta.ema(cvdCumulative, cvdSmoothLen)
+
+// Divergence detection: price vs CVD extremes over lookback
+priceLowNow  = ta.lowest(low, cvdDivLookback)
+priceLowPrev = ta.lowest(low[cvdDivLookback], cvdDivLookback)
+priceHiNow   = ta.highest(high, cvdDivLookback)
+priceHiPrev  = ta.highest(high[cvdDivLookback], cvdDivLookback)
+cvdLowNow    = ta.lowest(cvdSmooth, cvdDivLookback)
+cvdLowPrev   = ta.lowest(cvdSmooth[cvdDivLookback], cvdDivLookback)
+cvdHiNow     = ta.highest(cvdSmooth, cvdDivLookback)
+cvdHiPrev    = ta.highest(cvdSmooth[cvdDivLookback], cvdDivLookback)
+
+bullCvdDiv = priceLowNow < priceLowPrev and cvdLowNow > cvdLowPrev
+bearCvdDiv = priceHiNow > priceHiPrev and cvdHiNow < cvdHiPrev
+
+// CVD trend via rate of change, normalized by stdev
+cvdRoc     = cvdSmooth - cvdSmooth[cvdSmoothLen]
+cvdRocStd  = ta.stdev(cvdRoc, cvdSmoothLen * 2)
+cvdTrend   = cvdRocStd > 0 ? math.max(-1.0, math.min(1.0, cvdRoc / cvdRocStd)) : 0.0
+
+// Final CVD score: trend + divergence bonus
+cvdScore = cvdTrend
+if bullCvdDiv
+    cvdScore := math.min(1.0, cvdScore + 0.5)
+if bearCvdDiv
+    cvdScore := math.max(-1.0, cvdScore - 0.5)
+cvdScore := math.max(-1.0, math.min(1.0, cvdScore))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODULE 3: ADAPTIVE PIVOTS
+// Reduced lag (3,2) vs original (5,5). Fractal confirmation at 2x scale.
+// Score based on sweep detection and proximity to pivot levels.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+pvtHi = ta.pivothigh(high, pvtLeftBars, pvtRightBars)
+pvtLo = ta.pivotlow(low, pvtLeftBars, pvtRightBars)
+
+var float lastPvtHi = na
+var float lastPvtLo = na
+if not na(pvtHi)
+    lastPvtHi := pvtHi
+if not na(pvtLo)
+    lastPvtLo := pvtLo
+
+// Fractal confirmation at larger scale
+pvtHiLg = ta.pivothigh(high, pvtLeftBars * 2, pvtRightBars * 2)
+pvtLoLg = ta.pivotlow(low, pvtLeftBars * 2, pvtRightBars * 2)
+var float lastPvtHiLg = na
+var float lastPvtLoLg = na
+if not na(pvtHiLg)
+    lastPvtHiLg := pvtHiLg
+if not na(pvtLoLg)
+    lastPvtLoLg := pvtLoLg
+
+pvtProximity = atrVal * pvtProxAtr
+
+// Sweep: wick through level but close back inside (liquidity grab)
+sweepLow  = not na(lastPvtLo) and low < lastPvtLo and close > lastPvtLo
+sweepHigh = not na(lastPvtHi) and high > lastPvtHi and close < lastPvtHi
+
+// Proximity: price near a pivot level
+nearSupport    = not na(lastPvtLo) and math.abs(close - lastPvtLo) < pvtProximity
+nearResistance = not na(lastPvtHi) and math.abs(close - lastPvtHi) < pvtProximity
+
+// Fractal confluence: small pivot aligns with large pivot
+fractalSupConf  = not na(lastPvtLoLg) and not na(lastPvtLo) and math.abs(lastPvtLo - lastPvtLoLg) < pvtProximity
+fractalResConf  = not na(lastPvtHiLg) and not na(lastPvtHi) and math.abs(lastPvtHi - lastPvtHiLg) < pvtProximity
+
+pivotScore = 0.0
+if sweepLow
+    pivotScore += 0.7
+if sweepHigh
+    pivotScore -= 0.7
+if nearSupport
+    pivotScore += 0.3
+if nearResistance
+    pivotScore -= 0.3
+if fractalSupConf and pivotScore > 0
+    pivotScore += 0.3
+if fractalResConf and pivotScore < 0
+    pivotScore -= 0.3
+pivotScore := math.max(-1.0, math.min(1.0, pivotScore))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODULE 4: ABSORPTION DETECTION
+// absorptionRatio = normalizedVolume / normalizedRange
+// High volume + small range = absorption (smart money accumulating/distributing)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+avgVol   = ta.sma(volume, absLookback)
+avgRange = ta.sma(barRange, absLookback)
+normVol  = avgVol > 0   ? volume / avgVol          : 1.0
+normRng  = avgRange > 0 ? barRange / avgRange       : 1.0
+absRatio = normRng > 0  ? normVol / normRng          : 1.0
+
+isBullClose = close > open
+
+absorptionScore = 0.0
+if absRatio >= absThreshold
+    absorptionScore := isBullClose ? 1.0 : -1.0
+else if absRatio > 1.0
+    // Partial score scaled linearly between 1.0 and threshold
+    absorptionScore := (absRatio - 1.0) / (absThreshold - 1.0) * (isBullClose ? 0.5 : -0.5)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODULE 5: ORDER IMBALANCE RATIO
+// OIR = (buyVol - sellVol) / (buyVol + sellVol), smoothed with EMA.
+// Extreme values signal directional pressure.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+oirBuyVol  = barRange > 0 ? volume * ((close - low) / barRange) : volume * 0.5
+oirSellVol = volume - oirBuyVol
+oirTotal   = oirBuyVol + oirSellVol
+rawOir     = oirTotal > 0 ? (oirBuyVol - oirSellVol) / oirTotal : 0.0
+smoothOir  = ta.ema(rawOir, oirSmoothing)
+
+oirScore = 0.0
+if math.abs(smoothOir) >= oirThreshold
+    // Beyond threshold: scale to [-1, +1] range
+    oirScore := math.max(-1.0, math.min(1.0, smoothOir / oirThreshold))
+else
+    // Below threshold: half weight
+    oirScore := smoothOir * 0.5
+oirScore := math.max(-1.0, math.min(1.0, oirScore))
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// MODULE 6: MULTI-TIMEFRAME
+// HTF EMA20/50 trend, VWAP position, RSI direction.
+// 2/3 or 3/3 agreement required for signal.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+htfTrendUp   = htfEma20 > htfEma50
+htfTrendDown = htfEma20 < htfEma50
+htfAboveVwap = close > htfVwap
+htfBelowVwap = close < htfVwap
+htfRsiBull   = htfRsi > 50
+htfRsiBear   = htfRsi < 50
+
+htfBullCount = (htfTrendUp   ? 1 : 0) + (htfAboveVwap ? 1 : 0) + (htfRsiBull ? 1 : 0)
+htfBearCount = (htfTrendDown ? 1 : 0) + (htfBelowVwap ? 1 : 0) + (htfRsiBear ? 1 : 0)
+
+mtfScore = 0.0
+if htfBullCount >= 2
+    mtfScore := htfBullCount == 3 ? 1.0 : 0.6
+else if htfBearCount >= 2
+    mtfScore := htfBearCount == 3 ? -1.0 : -0.6
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// COMPOSITE SCORING ENGINE
+// Weighted sum normalized by total weight. Replaces the 6-way AND gate.
+// Any strong 3-4 signals can trigger entry — not all 6 required.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+totalWeight    = wHvn + wCvd + wPivot + wAbsorption + wOir + wMtf
+compositeRaw   = wHvn * hvnScore + wCvd * cvdScore + wPivot * pivotScore
+               + wAbsorption * absorptionScore + wOir * oirScore + wMtf * mtfScore
+compositeScore = totalWeight > 0 ? compositeRaw / totalWeight : 0.0
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// POSITION SIZING — ATR-based risk management
+// qty = (equity * riskPct) / (ATR * SL multiplier)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+riskPerUnit = atrVal * slMult
+posQty      = riskPerUnit > 0 ? math.floor(strategy.equity * (riskPct / 100.0) / riskPerUnit) : 0
+posQty     := math.max(1, posQty)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENTRY LOGIC
+// ═══════════════════════════════════════════════════════════════════════════════
+
+longCondition  = compositeScore >= entryThreshold and strategy.position_size == 0
+shortCondition = compositeScore <= -entryThreshold and strategy.position_size == 0
+
+if longCondition
+    strategy.entry("Long", strategy.long, qty=posQty)
+
+if shortCondition
+    strategy.entry("Short", strategy.short, qty=posQty)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// EXIT LOGIC — anchored to strategy.position_avg_price (Bug Fix #1)
+// Trail offset guaranteed > 0 (Bug Fix #9)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if strategy.position_size > 0
+    entryP   = strategy.position_avg_price
+    slPrice  = entryP - atrVal * slMult
+    tpPrice  = entryP + atrVal * tpMult
+    if useTrailStop
+        trailPts = math.max(1, math.round(atrVal * trailMult / syminfo.mintick))
+        trailOff = math.max(1, math.round(atrVal * trailOffsetMult / syminfo.mintick))
+        strategy.exit("Exit Long", "Long", stop=slPrice, limit=tpPrice,
+             trail_points=trailPts, trail_offset=trailOff)
+    else
+        strategy.exit("Exit Long", "Long", stop=slPrice, limit=tpPrice)
+
+if strategy.position_size < 0
+    entryP   = strategy.position_avg_price
+    slPrice  = entryP + atrVal * slMult
+    tpPrice  = entryP - atrVal * tpMult
+    if useTrailStop
+        trailPts = math.max(1, math.round(atrVal * trailMult / syminfo.mintick))
+        trailOff = math.max(1, math.round(atrVal * trailOffsetMult / syminfo.mintick))
+        strategy.exit("Exit Short", "Short", stop=slPrice, limit=tpPrice,
+             trail_points=trailPts, trail_offset=trailOff)
+    else
+        strategy.exit("Exit Short", "Short", stop=slPrice, limit=tpPrice)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// ENTRY/EXIT MARKERS
+// ═══════════════════════════════════════════════════════════════════════════════
+
+plotshape(longCondition,  "Long Entry",  shape.triangleup,   location.belowbar, color.green, size=size.small)
+plotshape(shortCondition, "Short Entry", shape.triangledown, location.abovebar, color.red,   size=size.small)
+bgcolor(compositeScore >= entryThreshold ? color.new(color.green, 92) :
+     compositeScore <= -entryThreshold ? color.new(color.red, 92) : na)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// VISUALIZATION — Volume Profile (barstate.islast only, Bug Fix #2)
+// Clears all previous drawings via box.all/line.all/label.all loops.
+// Budget: ~50 boxes + 3 lines + 6 labels = well within 500 limit.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+if barstate.islast and showProfile
+    // Clear all previous drawings (snapshot arrays to avoid mutation during iteration)
+    aBoxes = box.all
+    if array.size(aBoxes) > 0
+        for i = 0 to array.size(aBoxes) - 1
+            box.delete(array.get(aBoxes, i))
+    aLines = line.all
+    if array.size(aLines) > 0
+        for i = 0 to array.size(aLines) - 1
+            line.delete(array.get(aLines, i))
+    aLabels = label.all
+    if array.size(aLabels) > 0
+        for i = 0 to array.size(aLabels) - 1
+            label.delete(array.get(aLabels, i))
+
+    rightBar = bar_index + profileWidth + 5
+    leftBar  = bar_index + 5
+
+    if vpRowHeight > 0 and vpMaxVol > 0
+        // Draw per-bin buy/sell boxes
+        for i = 0 to vpNumRows - 1
+            binBottom = vpLowest + i * vpRowHeight
+            binTop    = binBottom + vpRowHeight
+            binTotal  = array.get(binTotalVol, i)
+
+            if binTotal > 0
+                totalW    = math.round(profileWidth * (binTotal / vpMaxVol))
+                bV        = array.get(binBuyVol, i)
+                sV        = array.get(binSellVol, i)
+                sellW     = math.round(totalW * (sV / binTotal))
+                buyW      = totalW - sellW
+                if buyW > 0
+                    box.new(rightBar - totalW, binTop, rightBar - sellW, binBottom,
+                         border_color=buyColor, bgcolor=buyColor)
+                if sellW > 0
+                    box.new(rightBar - sellW, binTop, rightBar, binBottom,
+                         border_color=sellColor, bgcolor=sellColor)
+
+        // POC line
+        line.new(leftBar, pocPrice, rightBar, pocPrice,
+             color=pocColor, width=2, style=line.style_dashed)
+
+        // VAH / VAL lines
+        line.new(leftBar, vahPrice, rightBar, vahPrice,
+             color=color.new(color.blue, 30), width=1, style=line.style_dashed)
+        line.new(leftBar, valPrice, rightBar, valPrice,
+             color=color.new(color.blue, 30), width=1, style=line.style_dashed)
+
+        // Level labels
+        label.new(rightBar, pocPrice, "POC",
+             style=label.style_label_left, color=pocColor, textcolor=color.black, size=size.small)
+        label.new(rightBar, vahPrice, "VAH",
+             style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
+        label.new(rightBar, valPrice, "VAL",
+             style=label.style_label_left, color=color.new(color.blue, 30), textcolor=color.white, size=size.small)
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// DASHBOARD TABLE
+// Signal scores, weights, composite, edge tracking metrics.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+var dashTable = table.new(position.top_right, 4, 10, bgcolor=color.new(color.black, 80), border_width=1)
+
+if barstate.islast and showDashboard
+    hdrBg  = color.new(color.gray, 50)
+    txtClr = color.white
+    sz     = size.small
+
+    // Header
+    table.cell(dashTable, 0, 0, "Signal",     bgcolor=hdrBg, text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 0, "Score",      bgcolor=hdrBg, text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 2, 0, "Weight",     bgcolor=hdrBg, text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 0, "Wtd Score",  bgcolor=hdrBg, text_color=txtClr, text_size=sz)
+
+    // Row 1: Volume Profile
+    table.cell(dashTable, 0, 1, "Vol Profile", text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 1, str.tostring(hvnScore, "#.##"),          text_color=scoreColor(hvnScore), text_size=sz)
+    table.cell(dashTable, 2, 1, str.tostring(wHvn, "#.##"),              text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 1, str.tostring(wHvn * hvnScore, "#.###"),  text_color=scoreColor(hvnScore), text_size=sz)
+
+    // Row 2: CVD
+    table.cell(dashTable, 0, 2, "CVD",         text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 2, str.tostring(cvdScore, "#.##"),          text_color=scoreColor(cvdScore), text_size=sz)
+    table.cell(dashTable, 2, 2, str.tostring(wCvd, "#.##"),              text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 2, str.tostring(wCvd * cvdScore, "#.###"),  text_color=scoreColor(cvdScore), text_size=sz)
+
+    // Row 3: Pivots
+    table.cell(dashTable, 0, 3, "Pivots",      text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 3, str.tostring(pivotScore, "#.##"),            text_color=scoreColor(pivotScore), text_size=sz)
+    table.cell(dashTable, 2, 3, str.tostring(wPivot, "#.##"),                text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 3, str.tostring(wPivot * pivotScore, "#.###"),  text_color=scoreColor(pivotScore), text_size=sz)
+
+    // Row 4: Absorption
+    table.cell(dashTable, 0, 4, "Absorption",  text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 4, str.tostring(absorptionScore, "#.##"),                text_color=scoreColor(absorptionScore), text_size=sz)
+    table.cell(dashTable, 2, 4, str.tostring(wAbsorption, "#.##"),                    text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 4, str.tostring(wAbsorption * absorptionScore, "#.###"), text_color=scoreColor(absorptionScore), text_size=sz)
+
+    // Row 5: OIR
+    table.cell(dashTable, 0, 5, "OIR",         text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 5, str.tostring(oirScore, "#.##"),          text_color=scoreColor(oirScore), text_size=sz)
+    table.cell(dashTable, 2, 5, str.tostring(wOir, "#.##"),              text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 5, str.tostring(wOir * oirScore, "#.###"),  text_color=scoreColor(oirScore), text_size=sz)
+
+    // Row 6: MTF
+    table.cell(dashTable, 0, 6, "MTF",         text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 6, str.tostring(mtfScore, "#.##"),          text_color=scoreColor(mtfScore), text_size=sz)
+    table.cell(dashTable, 2, 6, str.tostring(wMtf, "#.##"),              text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 6, str.tostring(wMtf * mtfScore, "#.###"),  text_color=scoreColor(mtfScore), text_size=sz)
+
+    // Row 7: Composite
+    compBg = color.new(color.white, 85)
+    table.cell(dashTable, 0, 7, "COMPOSITE",   bgcolor=compBg, text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 7, str.tostring(compositeScore, "#.###"), bgcolor=compBg, text_color=scoreColor(compositeScore), text_size=sz)
+    table.cell(dashTable, 2, 7, "",            bgcolor=compBg, text_size=sz)
+    signalLabel = compositeScore >= entryThreshold ? "LONG" : compositeScore <= -entryThreshold ? "SHORT" : "FLAT"
+    signalClr   = compositeScore >= entryThreshold ? color.green : compositeScore <= -entryThreshold ? color.red : color.gray
+    table.cell(dashTable, 3, 7, signalLabel,   bgcolor=compBg, text_color=signalClr, text_size=sz)
+
+    // Row 8: Edge tracking — trades & win rate
+    winRate = strategy.closedtrades > 0 ? strategy.wintrades / strategy.closedtrades * 100.0 : 0.0
+    table.cell(dashTable, 0, 8, "Trades",      text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 8, str.tostring(strategy.closedtrades), text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 2, 8, "Win %",       text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 8, str.tostring(winRate, "#.#") + "%", text_color=winRate > 50 ? color.green : color.red, text_size=sz)
+
+    // Row 9: Edge tracking — net P/L & profit factor
+    pf = strategy.grossloss != 0 ? strategy.grossprofit / math.abs(strategy.grossloss) : 0.0
+    table.cell(dashTable, 0, 9, "Net P/L",     text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 1, 9, str.tostring(strategy.netprofit, "#.##"), text_color=strategy.netprofit > 0 ? color.green : color.red, text_size=sz)
+    table.cell(dashTable, 2, 9, "PF",          text_color=txtClr, text_size=sz)
+    table.cell(dashTable, 3, 9, str.tostring(pf, "#.##"), text_color=pf > 1.0 ? color.green : color.red, text_size=sz)
